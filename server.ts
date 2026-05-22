@@ -13,9 +13,50 @@ async function startServer() {
   app.use(express.json({ limit: "10mb" }));
 
   // API router
+  app.post("/api/gemini/verify", async (req, res) => {
+    try {
+      const { customApiKey, model } = req.body;
+
+      if (!customApiKey) {
+        return res.status(400).json({ error: "الرجاء إدخال مفتاح الـ API للتحقق." });
+      }
+
+      const ai = new GoogleGenAI({
+        apiKey: customApiKey,
+        httpOptions: {
+          headers: {
+            "User-Agent": "aistudio-build",
+          },
+        },
+      });
+
+      // Perform a minimal, zero-cost token verification test
+      const testModel = model || "gemini-2.5-flash";
+      const testResponse = await ai.models.generateContent({
+        model: testModel,
+        contents: "Hello, confirm this key is active with a single word yes",
+      });
+
+      if (testResponse && testResponse.text) {
+        return res.json({ 
+          success: true, 
+          message: "تم التحقق والتفعيل بنجاح! الاتصال بالنموذج نشط ومستقر.",
+          modelName: testModel
+        });
+      } else {
+        return res.status(400).json({ error: "فشل التحقق: لم يستجب النموذج بشكل صحيح." });
+      }
+    } catch (error: any) {
+      console.error("Verification error:", error);
+      return res.status(500).json({ 
+        error: error?.message || "مفتاح API غير صالح أو غير مفعل. يرجى التأكد من المفتاح والمحاولة مجدداً." 
+      });
+    }
+  });
+
   app.post("/api/gemini/chat", async (req, res) => {
     try {
-      const { message, state, chatHistory, customApiKey } = req.body;
+      const { message, state, chatHistory, customApiKey, model, systemInstruction } = req.body;
 
       if (!message) {
         return res.status(400).json({ error: "Message is required." });
@@ -42,19 +83,26 @@ async function startServer() {
         .map((h: any) => `${h.role === "user" ? "User" : "AI"}: ${h.message}`)
         .join("\n");
 
-      const systemInstruction = `
-        You are "Prompt RKN Live Organizer", a premium embedded AI system deeply integrated inside a Prompt Manager app.
-        In this app, there are "Gates" (which are Categories) and "Prompts" (stored in categories).
-        You have FULL CONTROL over the application state. When the user asks to "organize", "categorize", "split", "sort", "restructure", "audit" their prompts, you can create new gates, delete unused gates (except favorites), assign prompts to gates, and improve naming.
-        
-        Rules:
-        1. Always keep the 'favorites' gate intact (id: "favorites", name: "Favorites", isDeletable: false).
-        2. Keep prompt content and notes unless the user explicitly asks to edit them. Re-categorizing involves modifying the gateId of prompts.
-        3. If you propose edits, set "isProposal" to true and return the complete new State in "proposedState". Include all gates and all prompts.
-        4. If you are just answering questions, clarifying user intent, speaking to the user, or no structure changes are needed, set "isProposal" to false and return null or omit "proposedState".
-        5. Respond in elegant, premium, professional Arabic (العربية). Be helpful, explain your reasoning, and ask for permission.
-        6. Always request approval (e.g. "هل تود أن أقوم بتطبيق هذا التنظيم المقترح؟") when proposing state updates.
+      const defaultSystemInstruction = `
+        أنت "منظم ومساعد نصوص Prompt RKN الذكي" (Prompt RKN Live Organizer)، وهو نظام ذكاء اصطناعي مدمج في صلب تطبيق لإدارة النصوص والبرومبتات.
+        يحتوي التطبيق على "بوابات/فئات" (Gates/Categories) وعلى "نصوص برمجة وملاحظات" (Prompts) مخزنة بداخلها.
+        أنت تتمتع بصلاحيات كاملة للتحكم في حالة التطبيق (State).
+
+        قواعد الفهم والتنظير والعمل (مهم جداً):
+        1. الفهم أولاً والاستيضاح: إذا طلب المستخدم منك إضافة نص جديد أو تعديل نص أو تنظيم أو نقله، ولم يوضح لك كامل التفاصيل الأساسية (مثل: عنوان النص، محتوى النص، الملاحظة الخاصة بالنص، أو الفئة المستهدفة التي يريد وضع النص فيها)، يجب أن لا تفترض قيماً وهمية من عندك بل قم بالرد عليه فوراً باللغة العربية واطلب منه التفاصيل بلطف تام (قم بتعيين isProposal: false وأبقِ proposedState فارغاً أو null).
+        2. عند اكتمال الرؤية وتوضيح التفاصيل: بمجرد أن يزودك المستخدم بالتفاصيل أو عندما يكون طلبه واضحاً ومباشراً (مثال: "أضف نص باسم كذا ومحتوى كذا وملاحظة كذا في فئة العمل")، قم بإنشاء الفئة إذا لم تكن موجودة بقائمة الفئات، ثم قم بإدراج البرومبت الجديد بالقيم الصحيحة التي أرسلها، وضعه في proposedState مع تعيين isProposal: true.
+        3. هيكلية البرومبتات في التطبيق تحتوي على:
+           - id: معرف فريد من نوعه (مثال: id-xxxxx).
+           - gateId: معرف الفئة التي ينتمي إليها.
+           - title: عنوان النص (Prompt Title).
+           - content: كتابة النص الفعلي ومحتواه (Prompt Content).
+           - note: الملاحظة المخصصة لهذا النص (Note).
+           - isFavorite: هل هو مفضل أم لا (قيمة بولينية).
+        4. الحفاظ على البيانات: لا تحذف بوابات تحتوي على نصوص إلا إذا طلب المستخدم ذلك صراحة. حافظ دائماً على بوابة المفضلة (id: "favorites", name: "Favorites").
+        5. اللغة: تواصل دائماً بلغة عربية راقية ومفهومة ومحترفة وأظهر أنك تفهم رغباته وتقارير التفاصيل المقترحة قبل مطالبته بالضغط على "تطبيق".
       `;
+
+      const activeSystemInstruction = systemInstruction || defaultSystemInstruction;
 
       const prompt = `
         Current App State:
@@ -68,25 +116,25 @@ async function startServer() {
       `;
 
       const response = await ai.models.generateContent({
-        model: "gemini-3.5-flash",
+        model: model || "gemini-3.5-flash",
         contents: prompt,
         config: {
-          systemInstruction,
+          systemInstruction: activeSystemInstruction,
           responseMimeType: "application/json",
           responseSchema: {
             type: Type.OBJECT,
             properties: {
               message: {
                 type: Type.STRING,
-                description: "Response speech in Arabic, explaining the plan/clarifying.",
+                description: "الرد المكتوب بالعربية للشرح أو الاستيضاح أو طلب التفاصيل.",
               },
               isProposal: {
                 type: Type.BOOLEAN,
-                description: "True if proposing state/organization updates.",
+                description: "تعيينها كـ True فقط إذا كنت تقترح تغييراً أو إضافة هيكلية فعلية في البيانات.",
               },
               proposedState: {
                 type: Type.OBJECT,
-                description: "The full proposed app state. Include all gates and prompts.",
+                description: "الحالة الكاملة الجديدة للتطبيق بعد الإضافة أو التعديل.",
                 properties: {
                   gates: {
                     type: Type.ARRAY,
@@ -124,7 +172,14 @@ async function startServer() {
         },
       });
 
-      const responseText = response.text || "{}";
+      let responseText = response.text || "{}";
+      
+      // Safety clean of Markdown JSON wrappers
+      if (responseText.includes("```")) {
+        responseText = responseText.replace(/```json/gi, "").replace(/```/gi, "");
+      }
+      responseText = responseText.trim();
+      
       const parsed = JSON.parse(responseText);
       res.json(parsed);
     } catch (error: any) {
