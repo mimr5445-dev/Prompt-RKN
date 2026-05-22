@@ -13,7 +13,7 @@ export interface Prompt {
   isFavorite: boolean;
 }
 
-export type View = 'home' | 'gate' | 'prompt' | 'settings' | 'add-prompt' | 'add-gate' | 'edit-gate';
+export type View = 'home' | 'gate' | 'prompt' | 'settings' | 'add-prompt' | 'add-gate' | 'edit-gate' | 'ai-chat';
 
 export interface AppState {
   gates: Gate[];

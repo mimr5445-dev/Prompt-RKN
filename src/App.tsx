@@ -16,7 +16,12 @@ import {
   Search,
   MoreVertical,
   X,
-  AlertTriangle
+  AlertTriangle,
+  Send,
+  Undo,
+  Sparkles,
+  Key,
+  MessageSquare
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Gate, Prompt, View, AppState } from './types';
@@ -47,6 +52,65 @@ export default function App() {
   const [toastMessage, setToastMessage] = useState('Copied to clipboard!');
   const [showToast, setShowToast] = useState(false);
   const [gateToDelete, setGateToDelete] = useState<string | null>(null);
+
+  // Rollback state for restoring previous organization
+  const [rollbackState, setRollbackState] = useState<AppState | null>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('prompt_rkn_rollback');
+      return saved ? JSON.parse(saved) : null;
+    }
+    return null;
+  });
+
+  // Custom API Key configured by user
+  const [customApiKey, setCustomApiKey] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('prompt_rkn_custom_key') || '';
+    }
+    return '';
+  });
+
+  // Chat message interface
+  interface ChatMessage {
+    id: string;
+    sender: 'user' | 'ai';
+    text: string;
+    isProposal?: boolean;
+    proposedState?: AppState;
+    proposalStatus?: 'pending' | 'accepted' | 'rejected';
+  }
+
+  // Chat conversation logs
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('prompt_rkn_chat_history');
+      if (saved) return JSON.parse(saved);
+    }
+    return [
+      {
+        id: 'welcome',
+        sender: 'ai',
+        text: 'مرحباً بك في منظم النصوص الذكي لـ Prompt RKN! 🧠✨\n\nبصفتي معالج ذكاء اصطناعي مدمج في صلب النظام، أمتلك تحكماً كاملاً لتنظيم وتصنيف وترتيب بواباتك ونصوصك.\n\nاكتب لي مثلاً: "نظم النصوص في التطبيق وقسمها إلى فئات وفولدرات مخصصة برمجية وأدبية وثقافية" وسأقوم بمراجعة فورية واقتراح واجهة جديدة كاملة والمطالبة بموافقتك قبل التطبيق. وفي حال لم يعجبك التنظيم، يمكنك الضغط على "استرجاع" لإعادة البيانات بالكامل إلى ما كانت عليه سابقاً!',
+      }
+    ];
+  });
+
+  const [chatInput, setChatInput] = useState('');
+  const [isChatLoading, setIsChatLoading] = useState(false);
+
+  // Persist custom key
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('prompt_rkn_custom_key', customApiKey);
+    }
+  }, [customApiKey]);
+
+  // Persist chat history
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('prompt_rkn_chat_history', JSON.stringify(chatMessages));
+    }
+  }, [chatMessages]);
 
   const triggerToast = (message: string) => {
     setToastMessage(message);
@@ -205,6 +269,118 @@ export default function App() {
     triggerToast('Copied to clipboard!');
   };
 
+  const sendChatMessage = async () => {
+    if (!chatInput.trim() || isChatLoading) return;
+
+    const userText = chatInput;
+    setChatInput('');
+
+    const newUserMsg: ChatMessage = {
+      id: crypto.randomUUID(),
+      sender: 'user',
+      text: userText,
+    };
+
+    const updatedMessages = [...chatMessages, newUserMsg];
+    setChatMessages(updatedMessages);
+    setIsChatLoading(true);
+
+    try {
+      const response = await fetch('/api/gemini/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          message: userText,
+          state: state,
+          chatHistory: updatedMessages.map(m => ({
+            role: m.sender === 'user' ? 'user' : 'model',
+            message: m.text,
+          })),
+          customApiKey: customApiKey,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (response.ok && data) {
+        const aiMsg: ChatMessage = {
+          id: crypto.randomUUID(),
+          sender: 'ai',
+          text: data.message || 'تمت معالجة الطلب بنجاح.',
+          isProposal: data.isProposal,
+          proposedState: data.proposedState,
+          proposalStatus: data.isProposal ? 'pending' : undefined,
+        };
+        setChatMessages(prev => [...prev, aiMsg]);
+      } else {
+        const aiMsg: ChatMessage = {
+          id: crypto.randomUUID(),
+          sender: 'ai',
+          text: `عذراً، حدث خطأ أثناء الاتصال بالخادم: ${data.error || 'خطأ غير معروف'}`,
+        };
+        setChatMessages(prev => [...prev, aiMsg]);
+      }
+    } catch (error: any) {
+      const aiMsg: ChatMessage = {
+        id: crypto.randomUUID(),
+        sender: 'ai',
+        text: `فشل الاتصال بذكاء التطبيق: ${error?.message || 'الرجاء التحقق من الإنترنت.'}`,
+      };
+      setChatMessages(prev => [...prev, aiMsg]);
+    } finally {
+      setIsChatLoading(false);
+    }
+  };
+
+  const handleAcceptProposal = (msgId: string, proposed: AppState) => {
+    if (!confirm('هل توافق على تطبيق هذا التنظيم المقترح؟ سيتم حفظ نسخة احتياطية من بياناتك الحالية تلقائياً لتتمكن من التراجع في أي وقت.')) return;
+
+    // Save rollback snapshot
+    localStorage.setItem('prompt_rkn_rollback', JSON.stringify(state));
+    setRollbackState(state);
+
+    // Apply new state
+    setState(proposed);
+
+    // Mark as accepted
+    setChatMessages(prev => prev.map(m => m.id === msgId ? { ...m, proposalStatus: 'accepted' as const } : m));
+    triggerToast('🎉 تم تطبيق التنظيم الذكي الجديد بنجاح!');
+  };
+
+  const handleRejectProposal = (msgId: string) => {
+    setChatMessages(prev => prev.map(m => m.id === msgId ? { ...m, proposalStatus: 'rejected' as const } : m));
+    triggerToast('Option rejected.');
+  };
+
+  const handleRestore = () => {
+    if (!rollbackState) {
+      triggerToast('لا توجد نسخة استرجاع محفوظة حالياً.');
+      return;
+    }
+
+    if (!confirm('هل تريد استرجاع آخر تنظيم كان فعالاً؟ سيتم عكس التغيير الذي قمنا به.')) return;
+
+    const temp = state;
+    setState(rollbackState);
+    setRollbackState(temp);
+    localStorage.setItem('prompt_rkn_rollback', JSON.stringify(temp));
+
+    triggerToast('↩️ تم استرجاع التنظيم السابق بنجاح!');
+  };
+
+  const clearChatHistory = () => {
+    if (!confirm('هل تريد مسح سجل دردشة المنظم وإعادة البدء؟')) return;
+    setChatMessages([
+      {
+        id: 'welcome',
+        sender: 'ai',
+        text: 'مرحباً بك في منظم النصوص الذكي لـ Prompt RKN! 🧠✨\n\nبصفتي معالج ذكاء اصطناعي مدمج في صلب النظام، أمتلك تحكماً كاملاً لتنظيم وتصنيف وترتيب بواباتك ونصوصك.\n\nاكتب لي مثلاً: "نظم النصوص في التطبيق وقسمها إلى فئات وفولدرات مخصصة برمجية وأدبية وثقافية" وسأقوم بمراجعة فورية واقتراح واجهة جديدة كاملة والمطالبة بموافقتك قبل التطبيق. وفي حال لم يعجبك التنظيم، يمكنك الضغط على "استرجاع" لإعادة البيانات بالكامل إلى ما كانت عليه سابقاً!',
+      }
+    ]);
+  };
+
   // Filtered Prompts
   const currentGate = state.gates.find(g => g.id === currentGateId);
   const filteredPrompts = currentGateId === 'favorites' 
@@ -320,9 +496,21 @@ export default function App() {
                   </div>
                   <h1 className="text-2xl font-bold tracking-tight text-[#4E342E]">Prompt RKN</h1>
                 </div>
-                <button onClick={navigateToSettings} className="p-2 hover:bg-[#4E342E]/5 rounded-full transition-colors">
-                  <SettingsIcon size={24} className="text-[#4E342E]/60" />
-                </button>
+                <div className="flex items-center gap-1">
+                  <button 
+                    onClick={() => setView('ai-chat')} 
+                    className="p-2.5 hover:bg-[#4E342E]/5 text-[#4E342E] rounded-full transition-all relative flex items-center justify-center"
+                    title="المنظم الذكي (AI Organizer)"
+                  >
+                    <div className="relative">
+                      <Brain size={24} />
+                      <span className="absolute top-0 right-0 w-2 h-2 bg-amber-600 rounded-full animate-pulse" />
+                    </div>
+                  </button>
+                  <button onClick={navigateToSettings} className="p-2.5 hover:bg-[#4E342E]/5 rounded-full transition-colors">
+                    <SettingsIcon size={24} className="text-[#4E342E]/60" />
+                  </button>
+                </div>
               </header>
 
               <div className="space-y-4">
@@ -578,6 +766,40 @@ export default function App() {
                 </section>
 
                 <section className="space-y-4">
+                  <h3 className="text-sm font-semibold text-[#4E342E]/50 uppercase tracking-widest text-[#4E342E]/60">AI Smart Integration</h3>
+                  <div className="p-5 bg-[#4E342E]/5 border border-[#4E342E]/10 rounded-2xl space-y-4 text-right" dir="rtl">
+                    <p className="text-xs text-[#4E342E]/70 leading-relaxed">
+                      المنظم مبرمج للعمل تلقائياً. يمكنك وضع مفتاح الـ API الخاص بـ Gemini إذا أردت استخدام حسابك الخاص أو نموذج مخصص لتنظيم النصوص بالكامل:
+                    </p>
+                    <div className="space-y-2 text-right">
+                      <div className="flex justify-between items-center text-xs font-bold text-[#4E342E]/60 tracking-wider">
+                        <span>Gemini API Key</span>
+                        <span className="text-[10px] opacity-60">(اختياري)</span>
+                      </div>
+                      <input 
+                        type="password" 
+                        value={customApiKey}
+                        onChange={e => setCustomApiKey(e.target.value)}
+                        placeholder="أدخل مفتاح الـ API هنا..."
+                        className="w-full bg-[#F5F5DC] border border-[#4E342E]/10 rounded-xl p-3 text-sm focus:outline-none focus:border-[#4E342E]/50 transition-all text-left font-mono"
+                      />
+                    </div>
+                    {rollbackState && (
+                      <button 
+                        onClick={handleRestore}
+                        className="w-full mt-2 flex items-center justify-between p-3.5 bg-amber-500/10 hover:bg-amber-500/20 text-[#4E342E] border border-amber-500/20 font-bold text-xs rounded-xl transition-all"
+                      >
+                        <span className="text-[10px] bg-amber-500/20 px-1.5 py-0.5 rounded text-[#4E342E]">متاح</span>
+                        <div className="flex items-center gap-2">
+                          <Undo size={14} />
+                          <span>استرجاع التنظيم السابق (Rollback)</span>
+                        </div>
+                      </button>
+                    )}
+                  </div>
+                </section>
+
+                <section className="space-y-4">
                   <h3 className="text-sm font-semibold text-[#4E342E]/50 uppercase tracking-widest">About</h3>
                   <div className="p-5 bg-[#4E342E]/5 border border-[#4E342E]/10 rounded-2xl space-y-2">
                     <p className="text-sm">Prompt RKN v1.0.0</p>
@@ -615,6 +837,163 @@ export default function App() {
                 }
               }} />
             </Modal>
+          )}
+
+          {view === 'ai-chat' && (
+            <motion.div 
+              key="ai-chat"
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="flex-1 flex flex-col h-screen max-h-screen"
+            >
+              <header className="p-6 flex items-center justify-between border-b border-[#4E342E]/5 bg-[#F5F5DC]/80 backdrop-blur-xl sticky top-0 z-10">
+                <div className="flex items-center gap-3">
+                  <button onClick={navigateToHome} className="p-2 hover:bg-[#4E342E]/5 rounded-full transition-colors">
+                    <ChevronLeft size={24} />
+                  </button>
+                  <div className="text-left">
+                    <h2 className="text-lg font-bold pr-2">المنظم الذكي (AI Organizer)</h2>
+                    <p className="text-[10px] text-emerald-600 font-semibold flex items-center gap-1 pl-2">
+                      <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-ping" />
+                      متصل ومستعد
+                    </p>
+                  </div>
+                </div>
+                
+                <div className="flex items-center gap-2">
+                  {rollbackState && (
+                    <button 
+                      onClick={handleRestore}
+                      className="p-2 bg-amber-500/10 hover:bg-amber-500/20 text-[#4E342E] rounded-xl transition-all font-bold text-xs flex items-center gap-1.5 border border-amber-500/20"
+                      title="استرجاع الحالة السابقة"
+                    >
+                      <Undo size={14} />
+                      <span className="hidden sm:inline">استرجاع</span>
+                    </button>
+                  )}
+                  <button 
+                    onClick={clearChatHistory}
+                    className="p-2 hover:bg-red-500/5 hover:text-red-500 text-[#4E342E]/60 rounded-xl transition-colors"
+                    title="مسح المحادثة"
+                  >
+                    <Trash2 size={18} />
+                  </button>
+                </div>
+              </header>
+
+              {/* Chat Message Stream */}
+              <div className="flex-1 overflow-y-auto p-6 space-y-4 pb-28">
+                {chatMessages.map((msg) => (
+                  <div 
+                    key={msg.id} 
+                    className={`flex flex-col ${msg.sender === 'user' ? 'items-end' : 'items-start'} space-y-1`}
+                  >
+                    <div className="text-[10px] text-[#4E342E]/40 px-2">
+                      {msg.sender === 'user' ? 'أنت' : 'منظم RKN الذكي'}
+                    </div>
+                    <div 
+                      className={`max-w-[85%] rounded-2xl p-4 text-sm leading-relaxed whitespace-pre-wrap ${
+                        msg.sender === 'user' 
+                          ? 'bg-[#4E342E] text-white shadow-md rounded-tr-none text-right' 
+                          : 'bg-[#4E342E]/5 text-[#4E342E] border border-[#4E342E]/10 rounded-tl-none text-right'
+                      }`}
+                      dir="rtl"
+                    >
+                      {msg.text}
+
+                      {/* If there's a proposed re-org, render a clean card with Accept/Reject */}
+                      {msg.isProposal && msg.proposedState && (
+                        <div className="mt-4 p-4 rounded-xl bg-[#F5F5DC] border border-[#4E342E]/10 space-y-3 text-right">
+                          <div className="flex items-center gap-2 text-[#4E342E] font-bold text-xs border-b border-[#4E342E]/10 pb-2">
+                            <Sparkles size={14} className="text-amber-600 animate-pulse" />
+                            <span>تنظيم جديد مقترح من المعالج الذكي</span>
+                          </div>
+                          <div className="space-y-1.5 text-xs text-[#4E342E]/80">
+                            <div>📌 الفئات المقترحة: <span className="font-bold">{msg.proposedState.gates.length}</span></div>
+                            <div>📝 النصوص الإجمالية: <span className="font-bold">{msg.proposedState.prompts.length}</span></div>
+                          </div>
+
+                          <div className="space-y-1 bg-[#4E342E]/5 p-2.5 rounded-lg text-[11px] max-h-24 overflow-y-auto border border-[#4E342E]/5">
+                            {msg.proposedState.gates.map((g, idx) => (
+                              <div key={idx} className="flex justify-between items-center text-[#4E342E]/70" dir="ltr">
+                                <span className="text-[10px] opacity-60">
+                                  ({msg.proposedState?.prompts.filter(p => p.gateId === g.id).length || 0} prompts)
+                                </span>
+                                <span className="font-medium text-right font-sans">📁 {g.name}</span>
+                              </div>
+                            ))}
+                          </div>
+
+                          {msg.proposalStatus === 'pending' && (
+                            <div className="flex gap-2 pt-1">
+                              <button
+                                onClick={() => handleAcceptProposal(msg.id, msg.proposedState!)}
+                                className="flex-1 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-1 transition-all active:scale-95 shadow-sm"
+                              >
+                                <Check size={12} />
+                                <span>قبول وتطبيق</span>
+                              </button>
+                              <button
+                                onClick={() => handleRejectProposal(msg.id)}
+                                className="flex-1 py-2 border border-[#4E342E]/10 hover:bg-[#4E342E]/5 text-[#4E342E] font-bold text-xs rounded-xl flex items-center justify-center gap-1 transition-all active:scale-95"
+                              >
+                                <X size={12} />
+                                <span>رفض الاقتراح</span>
+                              </button>
+                            </div>
+                          )}
+
+                          {msg.proposalStatus === 'accepted' && (
+                            <div className="py-1.5 text-center text-xs text-emerald-600 font-bold bg-emerald-50 rounded-lg flex items-center justify-center gap-1">
+                              <Check size={12} />
+                              <span>تم قبول وتطبيق التعديل المقترح!</span>
+                            </div>
+                          )}
+
+                          {msg.proposalStatus === 'rejected' && (
+                            <div className="py-1.5 text-center text-xs text-red-500 font-bold bg-red-50 rounded-lg flex items-center justify-center gap-1">
+                              <X size={12} />
+                              <span>تم رفض هذا الاقتراح.</span>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+
+                {isChatLoading && (
+                  <div className="flex justify-start items-center space-x-2 text-xs text-[#4E342E]/50" dir="rtl">
+                    <div className="w-6 h-6 bg-[#4E342E]/10 rounded-full flex items-center justify-center animate-spin">
+                      <Brain size={12} className="text-[#4E342E]" />
+                    </div>
+                    <span>معالج RKN يقوم بتحليل وتخطيط بوابات ونصوص النظام...</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Message Input panel */}
+              <div className="absolute bottom-0 left-0 right-0 p-4 bg-[#F5F5DC] border-t border-[#4E342E]/10 flex items-center gap-2">
+                <button
+                  onClick={sendChatMessage}
+                  disabled={!chatInput.trim() || isChatLoading}
+                  className="w-12 h-12 bg-[#4E342E] hover:bg-[#3d2924] disabled:opacity-50 text-white rounded-2xl flex items-center justify-center shadow-lg transition-all active:scale-95"
+                >
+                  <Send size={18} />
+                </button>
+                <input 
+                  type="text" 
+                  value={chatInput}
+                  onChange={e => setChatInput(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') sendChatMessage(); }}
+                  disabled={isChatLoading}
+                  placeholder="مثال: قسّم نصوصي إلى بوابتي العمل والتثقيف..."
+                  className="flex-1 bg-[#4E342E]/5 border border-[#4E342E]/10 rounded-2xl p-3.5 text-right focus:outline-none focus:border-[#4E342E]/50 transition-all text-sm"
+                  dir="rtl"
+                />
+              </div>
+            </motion.div>
           )}
         </AnimatePresence>
       </div>
