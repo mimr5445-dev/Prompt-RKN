@@ -21,10 +21,36 @@ import {
   Undo,
   Sparkles,
   Key,
-  MessageSquare
+  MessageSquare,
+  Cloud,
+  CloudOff,
+  User as UserIcon,
+  LogOut,
+  UserX,
+  RefreshCw,
+  Wifi,
+  WifiOff
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Gate, Prompt, View, AppState } from './types';
+import { onAuthStateChanged } from 'firebase/auth';
+import { 
+  auth, 
+  db, 
+  signInWithGoogleWrapper, 
+  logoutUserWrapper, 
+  deleteUserAccountWrapper, 
+  saveStateToFirestoreWrapper, 
+  fetchStateFromFirestoreWrapper, 
+  getSavedFirebaseConfig, 
+  saveFirebaseConfig, 
+  initFirebase,
+  getSavedSimulatedUser,
+  saveSimulatedUser,
+  clearSavedSimulatedUser,
+  FirebaseCustomConfig,
+  CompactUser
+} from './firebase';
 
 const STORAGE_KEY = 'prompt_rkn_data';
 
@@ -56,6 +82,18 @@ export default function App() {
   const [toastMessage, setToastMessage] = useState('Copied to clipboard!');
   const [showToast, setShowToast] = useState(false);
   const [gateToDelete, setGateToDelete] = useState<string | null>(null);
+
+  // --- Google Auth Status & User ---
+  const [currentUser, setCurrentUser] = useState<CompactUser | null>(null);
+  const [isAuthLoading, setIsAuthLoading] = useState(true);
+
+  // --- Server configuration check (Does the backend already possess a default API key?) ---
+  const [serverHasDefaultKey, setServerHasDefaultKey] = useState(false);
+
+  // --- Syncing & Connection states ---
+  const [isOnline, setIsOnline] = useState(() => typeof navigator !== 'undefined' ? navigator.onLine : true);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
 
   // Rollback state for restoring previous organization
   const [rollbackState, setRollbackState] = useState<AppState | null>(() => {
@@ -164,15 +202,145 @@ export default function App() {
   const triggerToast = (message: string) => {
     setToastMessage(message);
     setShowToast(true);
-    setTimeout(() => setShowToast(false), 2000);
+    setTimeout(() => setShowToast(false), 3000);
   };
 
-  // Persist state to localStorage
+  // --- Network Connection Handler ---
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    if (typeof window === 'undefined') return;
+
+    const handleOnline = () => {
+      setIsOnline(true);
+      triggerToast('📶 تم استعادة الشبكة! بدأت مزامنة بياناتك تلقائياً...');
+    };
+
+    const handleOffline = () => {
+      setIsOnline(false);
+      triggerToast('🔌 لا يوجد انترنت! التطبيق يعمل محلياً وسوف يتزامن تلقائياً بمجرد عودة الشبكة.');
+    };
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
+  // --- Load Server Config and Check Default Keys ---
+  useEffect(() => {
+    fetch('/api/config')
+      .then(res => res.json())
+      .then(data => {
+        if (data && data.hasServerKey) {
+          setServerHasDefaultKey(true);
+          // Auto-verify if the server already has a key configured!
+          // This keeps the chat active instantly if the Vercel/server backend has the key
+          setIsApiKeyVerified(true);
+        }
+      })
+      .catch(err => console.error("Error reading server key config:", err));
+  }, []);
+
+  // --- Firebase Google Auth & Simulator State Observer ---
+  useEffect(() => {
+    // 1. Check if there is already a simulated active Gmail user in session
+    const savedSim = getSavedSimulatedUser();
+    if (savedSim) {
+      setCurrentUser(savedSim);
+      setIsAuthLoading(false);
+
+      // Async fetch and load user's segmented data
+      setIsSyncing(true);
+      fetchStateFromFirestoreWrapper(savedSim.uid)
+        .then(cloudState => {
+          if (cloudState && (cloudState.gates || cloudState.prompts)) {
+            setState({
+              gates: cloudState.gates,
+              prompts: cloudState.prompts
+            });
+          }
+        })
+        .finally(() => {
+          setIsSyncing(false);
+        });
     }
-  }, [state]);
+
+    if (!auth) {
+      if (!savedSim) {
+        setIsAuthLoading(false);
+      }
+      return;
+    }
+
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      setIsAuthLoading(false);
+      if (user) {
+        const compact: CompactUser = {
+          uid: user.uid,
+          displayName: user.displayName || 'مستخدم Google نشط',
+          email: user.email || '',
+          photoURL: user.photoURL || undefined
+        };
+        setCurrentUser(compact);
+        saveSimulatedUser(compact);
+
+        setIsSyncing(true);
+        try {
+          const cloudState = await fetchStateFromFirestoreWrapper(user.uid);
+          if (cloudState && (cloudState.gates || cloudState.prompts)) {
+            setState({
+              gates: cloudState.gates,
+              prompts: cloudState.prompts
+            });
+            triggerToast(`👤 مرحباً ${compact.displayName}! تمت مزامنة بواباتك ونصوصك السحابية.`);
+          } else {
+            await saveStateToFirestoreWrapper(user.uid, state);
+            triggerToast('☁️ تم إنشاء نسختك السحابية وحفظ بواباتك المحلية الحالية عليها بنجاح!');
+          }
+        } catch (err) {
+          console.error("Firebase auth cloud load error:", err);
+          triggerToast('⚠️ تم تسجيل الدخول محلياً. تعذر جلب البيانات السحابية.');
+        } finally {
+          setIsSyncing(false);
+        }
+      } else {
+        // If logged out from Firebase, check if we had a simulated user instead to avoid clearing unnecessarily
+        if (getSavedSimulatedUser() && getSavedSimulatedUser()?.uid.indexOf('sim-') === -1) {
+          setCurrentUser(null);
+        }
+      }
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  // --- Main Persistence and Sparing Cloud Sync Observer ---
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    // A. Always sync to localized cache
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+
+    // B. Push to Firestore / Simulated node if authenticated and network online
+    if (currentUser && isOnline) {
+      setIsSyncing(true);
+      saveStateToFirestoreWrapper(currentUser.uid, state)
+        .then(() => {
+          setHasUnsavedChanges(false);
+          setIsSyncing(false);
+        })
+        .catch(err => {
+          console.error("automatic background sync failure:", err);
+          setHasUnsavedChanges(true);
+          setIsSyncing(false);
+        });
+    } else if (currentUser) {
+      // Authenticated but currently disconnected/offline -> mark as unsaved
+      setHasUnsavedChanges(true);
+    }
+  }, [state, currentUser, isOnline]);
 
   // Navigation helpers
   const navigateToHome = () => setView('home');
@@ -446,7 +614,10 @@ export default function App() {
 
     // Mark as accepted
     setChatMessages(prev => prev.map(m => m.id === msgId ? { ...m, proposalStatus: 'accepted' as const } : m));
-    triggerToast('🎉 تم تطبيق التنظيم الذكي الجديد بنجاح!');
+    
+    // Redirect to home dashboard
+    setView('home');
+    triggerToast('🎉 تم تطبيق التنظيم الذكي الجديد والعودة للرئيسية!');
   };
 
   const handleRejectProposal = (msgId: string) => {
@@ -943,233 +1114,297 @@ export default function App() {
               </header>
 
               <div className="space-y-8">
-                <section className="space-y-4">
-                  <h3 className="text-sm font-semibold text-[#4E342E]/50 uppercase tracking-widest">Backup & Sync</h3>
-                  <div className="grid gap-4">
-                    <button 
-                      onClick={exportData}
-                      className="flex items-center justify-between p-5 bg-[#4E342E]/5 border border-[#4E342E]/10 rounded-2xl hover:bg-[#4E342E]/10 transition-all"
-                    >
-                      <div className="flex items-center gap-4">
-                        <div className="w-10 h-10 bg-[#4E342E]/20 rounded-xl flex items-center justify-center text-[#4E342E]">
-                          <Download size={20} />
-                        </div>
-                        <div className="text-left">
-                          <p className="font-medium">Export Data</p>
-                          <p className="text-xs text-[#4E342E]/50">Download your prompts as JSON</p>
-                        </div>
-                      </div>
-                    </button>
-
-                    <label className="flex items-center justify-between p-5 bg-[#4E342E]/5 border border-[#4E342E]/10 rounded-2xl hover:bg-[#4E342E]/10 transition-all cursor-pointer">
-                      <div className="flex items-center gap-4">
-                        <div className="w-10 h-10 bg-[#4E342E]/20 rounded-xl flex items-center justify-center text-[#4E342E]">
-                          <Upload size={20} />
-                        </div>
-                        <div className="text-left">
-                          <p className="font-medium">Import Data</p>
-                          <p className="text-xs text-[#4E342E]/50">Restore from a backup file</p>
-                        </div>
-                      </div>
-                      <input type="file" accept=".json" onChange={handleFileSelect} className="hidden" />
-                    </label>
+                {/* 1. Google iCloud & Profile Section */}
+                <section className="space-y-4 text-right" dir="rtl">
+                  <div className="flex justify-between items-center border-b border-[#4E342E]/10 pb-2">
+                    <h3 className="text-sm font-semibold text-[#4E342E]/50 uppercase tracking-widest font-sans">
+                      الملف الشخصي والنسخ السحابي تلقائياً ☁️
+                    </h3>
+                    <div className="flex items-center gap-1.5">
+                      {isSyncing ? (
+                        <span className="flex items-center gap-1.5 text-[10px] text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-full font-semibold">
+                          <RefreshCw size={11} className="animate-spin text-emerald-600" />
+                          جاري المزامنة...
+                        </span>
+                      ) : !isOnline ? (
+                        <span className="flex items-center gap-1.5 text-[10px] text-amber-700 bg-amber-50 px-2.5 py-1 rounded-full font-semibold">
+                          <WifiOff size={11} className="text-amber-600" />
+                          تعمل دون اتصال
+                        </span>
+                      ) : hasUnsavedChanges ? (
+                        <span className="flex items-center gap-1.5 text-[10px] text-amber-800 bg-amber-50 px-2.5 py-1 rounded-full font-semibold">
+                          <CloudOff size={11} className="text-amber-700" />
+                          تعديلات غير مزامنة
+                        </span>
+                      ) : currentUser ? (
+                        <span className="flex items-center gap-1.5 text-[10px] text-emerald-800 bg-emerald-50 px-2.5 py-1 rounded-full font-semibold">
+                          <Cloud size={11} className="text-emerald-600" />
+                          سحابي متزامن ومحمي
+                        </span>
+                      ) : null}
+                    </div>
                   </div>
+
+                  {isAuthLoading ? (
+                    <div className="p-6 bg-[#4E342E]/5 border border-[#4E342E]/10 rounded-2xl flex items-center justify-center gap-3">
+                      <span className="w-4 h-4 border-2 border-[#4E342E]/25 border-t-[#4E342E] rounded-full animate-spin" />
+                      <p className="text-sm text-[#4E342E]/70 font-medium">جاري تحديث حالة الاتصال السحابي بمزود غوغل...</p>
+                    </div>
+                  ) : currentUser ? (
+                    /* User Profile Details block */
+                    <div className="p-5 bg-emerald-50/40 border border-[#4E342E]/10 rounded-2xl space-y-4">
+                      <div className="flex items-center gap-4 flex-row-reverse">
+                        {currentUser.photoURL ? (
+                          <img 
+                            src={currentUser.photoURL} 
+                            referrerPolicy="no-referrer"
+                            alt={currentUser.displayName || "Google User"} 
+                            className="w-14 h-14 rounded-full border border-[#4E342E]/20 shadow-sm"
+                          />
+                        ) : (
+                          <div className="w-14 h-14 bg-[#4E342E]/10 rounded-full flex items-center justify-center text-[#4E342E]">
+                            <UserIcon size={24} />
+                          </div>
+                        )}
+                        <div className="text-right flex-1 space-y-0.5">
+                          <h4 className="font-bold text-base text-[#4E342E]">{currentUser.displayName || 'مستخدم Gmail نشط'}</h4>
+                          <p className="text-xs text-[#4E342E]/65">{currentUser.email}</p>
+                          <p className="text-[10px] text-emerald-700 bg-emerald-50 rounded-lg px-2.5 py-1 inline-block font-semibold mt-1">
+                            ✓ متصل سحابياً مع Firestore (متاح في جميع المتصفحات)
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex gap-2 pt-2 border-t border-[#4E342E]/10">
+                        <button
+                          onClick={async () => {
+                            try {
+                              await logoutUserWrapper();
+                              setCurrentUser(null);
+                              triggerToast('👋 تم تسجيل الخروج بنجاح! التطبيق يعمل محلياً الآن.');
+                            } catch (e: any) {
+                              triggerToast(`فشل تسجيل الخروج: ${e?.message}`);
+                            }
+                          }}
+                          className="flex-1 py-2.5 px-4 bg-[#4E342E]/10 hover:bg-[#4E342E]/15 text-[#4E342E] font-bold text-xs rounded-xl flex items-center justify-center gap-2 transition-all active:scale-95 cursor-pointer"
+                        >
+                          <LogOut size={14} />
+                          <span>تسجيل الخروج</span>
+                        </button>
+
+                        <button
+                          onClick={async () => {
+                            if (window.confirm('⚠️ هل أنت متأكد تماماً من رغبتك في حذف حسابك وحذف جميع بواباتك ومقترحاتك المخزنة سحابياً بشكل نهائي؟ لا يمكن التراجع عن هذا الإجراء.')) {
+                              try {
+                                const uid = currentUser.uid;
+                                await deleteUserAccountWrapper(uid);
+                                setCurrentUser(null);
+                                triggerToast('🗑️ تم إتلاف وحذف جميع ملفاتك وقفل المساحة السحابية بنجاح.');
+                              } catch (e: any) {
+                                triggerToast(`فشلت الإزالة الكاملة: يرجى تسجيل الدخول مجدداً للإجراء الأمني.`);
+                              }
+                            }
+                          }}
+                          className="flex-1 py-2.5 px-4 bg-red-500/10 hover:bg-red-500/15 text-red-700 font-bold text-xs rounded-xl flex items-center justify-center gap-2 transition-all active:scale-95 cursor-pointer"
+                        >
+                          <UserX size={14} />
+                          <span>حذف الحساب بالكامل</span>
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    /* Google sign-in trigger placeholder card */
+                    <div className="p-6 bg-[#4E342E]/5 border border-[#4E342E]/10 rounded-2xl flex flex-col items-center justify-center text-center space-y-4">
+                      <div className="w-12 h-12 bg-[#4E342E]/5 border border-[#4E342E]/10 rounded-full flex items-center justify-center text-[#4E342E]/40 animate-pulse">
+                        <Cloud size={24} />
+                      </div>
+                      <div className="space-y-1.5 max-w-sm">
+                        <h4 className="font-bold text-sm text-[#4E342E]">ربط التطبيق والمزامنة الفورية عبر حساب Google 🔑</h4>
+                        <p className="text-xs text-[#4E342E]/75 leading-relaxed">
+                          بمجرد تسجيل دخولك بحساب Gmail، سيتم مزامنة جميع بواباتك وتعديلاتك ونصوصك تلقائياً مع السحابة الفورية وتحديثها تلقائياً على أي متصفح أو هاتف آخر!
+                        </p>
+                      </div>
+                      <button
+                        onClick={async () => {
+                          try {
+                            const user = await signInWithGoogleWrapper();
+                            if (user) {
+                              const compact: CompactUser = {
+                                uid: user.uid,
+                                displayName: user.displayName || 'مستخدم Google',
+                                email: user.email || '',
+                                photoURL: user.photoURL || undefined
+                              };
+                              setCurrentUser(compact);
+                              saveSimulatedUser(compact);
+
+                              // Load data from firestore
+                              setIsSyncing(true);
+                              try {
+                                const cloudState = await fetchStateFromFirestoreWrapper(user.uid);
+                                if (cloudState && (cloudState.gates || cloudState.prompts)) {
+                                  setState({
+                                    gates: cloudState.gates,
+                                    prompts: cloudState.prompts
+                                  });
+                                  triggerToast(`🎉 تم مزامنة واستيراد بواباتك ونصوصك السحابية بنجاح!`);
+                                } else {
+                                  await saveStateToFirestoreWrapper(user.uid, state);
+                                  triggerToast('🎉 تم ربط حسابك بـ Google وفتح المساحة السحابية المزامنة بنجاح!');
+                                }
+                              } catch (loadErr) {
+                                triggerToast('🎉 تم تسجيل الدخول بنجاح عبر حساب Google!');
+                              } finally {
+                                setIsSyncing(false);
+                              }
+                            }
+                          } catch (e: any) {
+                            console.error("Google Auth popup error:", e);
+                            if (e?.code === 'auth/popup-blocked') {
+                              triggerToast('⚠️ تم حظر النافذة المنبثقة للاتصال بـ Google. يرجى فتح التطبيق في علامة تبويب جديدة ثم الدخول.');
+                            } else {
+                              triggerToast(`❌ فشل الاتصال بـ Google: ${e?.message || e}`);
+                            }
+                          }
+                        }}
+                        className="py-3 px-6 bg-[#4E342E] hover:bg-[#3d2722] text-white font-bold text-xs rounded-xl flex items-center justify-center gap-2.5 transition-all shadow-md active:scale-95 cursor-pointer font-sans"
+                      >
+                        <svg className="w-4 h-4 fill-current" viewBox="0 0 24 24">
+                          <path d="M12.24 10.285V13.4h6.887C18.2 15.614 15.645 18 12.24 18c-3.86 0-7-3.14-7-7s3.14-7 7-7c1.71 0 3.27.61 4.5 1.64l2.43-2.43C17.39 1.62 14.97 1 12.24 1c-5.52 0-10 4.48-10 10s4.48 10 10 10c5.78 0 10-4.06 10-10 0-.68-.07-1.35-.16-1.715h-9.84z"/>
+                        </svg>
+                        <span>تسجيل الدخول الفوري بحساب Google</span>
+                      </button>
+                    </div>
+                  )}
                 </section>
 
                 <section className="space-y-4">
-                  <h3 className="text-sm font-semibold text-[#4E342E]/50 uppercase tracking-widest text-[#4E342E]/60">إعدادات المنظم الذكي (AI Setup)</h3>
-                  <div className="p-5 bg-[#4E342E]/5 border border-[#4E342E]/10 rounded-2xl space-y-5 text-right" dir="rtl">
-                    <p className="text-xs text-[#4E342E]/70 leading-relaxed">
-                      المنظم مبرمج للعمل تلقائياً. يمكنك تخصيص مفتاح الـ API والنموذج وسلوك الوكيل الذكي بالكامل حسب رغبتك:
-                    </p>
-
+                  <div className="p-5 bg-[#4E342E]/5 border border-[#4E342E]/10 rounded-2xl space-y-4 text-right" dir="rtl">
+                    
                     {/* API Key */}
                     <div className="space-y-2 text-right">
-                      <div className="flex justify-between items-center text-xs font-bold text-[#4E342E]/60 tracking-wider">
-                        <span>مفتاح Gemini API Key (مفتاح النموذج المسيطر)</span>
-                        <div className="flex items-center gap-1.5">
-                          {isApiKeyVerified ? (
-                            <span className="inline-flex items-center gap-1 text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full font-bold">
-                              <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
-                              نشط كنموذج مسيطر (Active Master)
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center gap-1 text-[10px] bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full font-bold">
-                              غير مفعّل أو معلّق
-                            </span>
-                          )}
-                        </div>
+                      <div className="flex justify-between items-center">
+                        <Key size={16} className="text-[#4E342E]/60" />
+                        {isApiKeyVerified && (
+                          <div className="flex items-center gap-1 bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full text-[10px] font-bold animate-pulse">
+                            <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full" />
+                            <span>Active</span>
+                          </div>
+                        )}
                       </div>
                       <input 
                         type="password" 
                         value={customApiKey}
                         onChange={e => {
                           setCustomApiKey(e.target.value);
-                          setIsApiKeyVerified(false); // require re-verification when key changes
+                          setIsApiKeyVerified(false);
                           setVerificationFeedback(null);
                         }}
-                        placeholder="أدخل مفتاح API للتحقق والتفعيل..."
+                        placeholder="••••••••••••••••••••••••"
                         className="w-full bg-[#F5F5DC] border border-[#4E342E]/10 rounded-xl p-3 text-sm focus:outline-none focus:border-[#4E342E]/50 transition-all text-left font-mono"
                       />
                     </div>
 
-                    {/* Model Selection */}
-                    <div className="space-y-2 text-right">
-                      <div className="flex justify-between items-center text-xs font-bold text-[#4E342E]/60 tracking-wider">
-                        <span>نموذج الذكاء الاصطناعي (Model)</span>
-                        <span className="text-[10px] opacity-60">(اختر أو اكتب اسماً مخصصاً)</span>
-                      </div>
-                      
-                      <div className="flex gap-2">
-                        <select 
-                          value={customModel === 'gemini-3.5-flash' || customModel === 'gemini-3.1-pro-preview' ? customModel : 'custom'}
-                          onChange={e => {
-                            if (e.target.value !== 'custom') {
-                              setCustomModel(e.target.value);
-                              setIsApiKeyVerified(false);
-                              setVerificationFeedback(null);
-                            }
-                          }}
-                          className="flex-1 bg-[#F5F5DC] border border-[#4E342E]/10 rounded-xl p-3 text-sm focus:outline-none focus:border-[#4E342E]/50 transition-all text-right font-sans outline-none"
-                        >
-                          <option value="gemini-3.5-flash">Gemini 3.5 Flash (سريع، قياسي)</option>
-                          <option value="gemini-3.1-pro-preview">Gemini 3.1 Pro (ذكي ومتقدم)</option>
-                          <option value="custom">اسم نموذج مخصص...</option>
-                        </select>
-                      </div>
-
-                      {/* Text Input for Custom Model */}
-                      {(customModel !== 'gemini-3.5-flash' && customModel !== 'gemini-3.1-pro-preview' || 
-                        (typeof window !== 'undefined' && !['gemini-3.5-flash', 'gemini-3.1-pro-preview'].includes(customModel))) && (
-                        <input 
-                          type="text"
-                          value={customModel}
-                          onChange={e => {
-                            setCustomModel(e.target.value);
-                            setIsApiKeyVerified(false);
-                            setVerificationFeedback(null);
-                          }}
-                          placeholder="مثال: gemini-3.5-flash"
-                          className="w-full mt-1.5 bg-[#F5F5DC] border border-[#4E342E]/10 rounded-xl p-3 text-sm focus:outline-none focus:border-[#4E342E]/50 transition-all text-left font-mono"
-                        />
-                      )}
-                      
-                      {/* Helper option triggers */}
-                      <div className="flex gap-1.5 mt-1 justify-end">
-                        <button 
-                          onClick={() => {
-                            setCustomModel('gemini-3.5-flash');
-                            setIsApiKeyVerified(false);
-                            setVerificationFeedback(null);
-                          }}
-                          className={`text-[10px] px-2.5 py-1 rounded-md border ${customModel === 'gemini-3.5-flash' ? 'bg-[#4E342E] text-white' : 'bg-transparent text-[#4E342E]/60 border-[#4E342E]/20'}`}
-                        >
-                          Gemini 3.5 Flash
-                        </button>
-                        <button 
-                          onClick={() => {
-                            setCustomModel('gemini-3.1-pro-preview');
-                            setIsApiKeyVerified(false);
-                            setVerificationFeedback(null);
-                          }}
-                          className={`text-[10px] px-2.5 py-1 rounded-md border ${customModel === 'gemini-3.1-pro-preview' ? 'bg-[#4E342E] text-white' : 'bg-transparent text-[#4E342E]/60 border-[#4E342E]/20'}`}
-                        >
-                          Gemini 3.1 Pro
-                        </button>
-                      </div>
-                    </div>
-
                     {/* Verification and Activation Action Button */}
-                    <div className="space-y-2 pt-1 border-t border-[#4E342E]/5">
+                    <div className="space-y-2">
                       <button
                         onClick={handleVerifyAndActivateKey}
                         disabled={isKeyVerifying}
-                        className="w-full py-3 bg-[#4E342E] hover:bg-[#3E2723] disabled:opacity-50 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-2 transition-all active:scale-[0.98] shadow-md shadow-[#4E342E]/10"
+                        className="w-full py-3 bg-[#4E342E] hover:bg-[#3E2723] disabled:opacity-50 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-2 transition-all active:scale-[0.98] shadow-md shadow-[#4E342E]/10 cursor-pointer"
                       >
                         {isKeyVerifying ? (
-                          <>
-                            <span className="w-3.5 h-3.5 border-2 border-white/35 border-t-white rounded-full animate-spin" />
-                            <span>جاري التحقق والاتصال بنموذج الدكاء...</span>
-                          </>
+                          <span className="w-4 h-4 border-2 border-white/35 border-t-white rounded-full animate-spin" />
                         ) : (
-                          <>
-                            <span>🔑</span>
-                            <span>التحقق وتفعيل النموذج المسيطر</span>
-                          </>
+                          <Check size={16} />
                         )}
                       </button>
 
                       {/* Verification Feedback Badge */}
                       {verificationFeedback && (
                         <div 
-                          className={`p-3 rounded-xl text-xs font-medium border leading-relaxed ${
+                          className={`p-3 rounded-xl text-xs font-medium border text-right ${
                             verificationFeedback.type === 'success' 
-                              ? 'bg-emerald-50/80 text-emerald-800 border-emerald-250' 
-                              : 'bg-red-50/80 text-red-800 border-red-250'
+                              ? 'bg-emerald-50/80 text-emerald-800 border-emerald-200' 
+                              : 'bg-red-50/80 text-red-800 border-red-200'
                           }`}
                         >
-                          {verificationFeedback.type === 'success' ? '✅ ' : '❌ '}
-                          {verificationFeedback.text}
+                          {verificationFeedback.type === 'success' ? '✔' : '✖'}
                         </div>
                       )}
-
-                      {!isApiKeyVerified && !verificationFeedback && (
-                        <p className="text-[10px] text-amber-800/80 leading-relaxed bg-amber-500/5 px-3 py-2 rounded-lg border border-amber-550/10">
-                          ⚠️ تنبيه: يجب تفعيل مفتاح الـ API والتحقق منه بنجاح ليصبح "النموذج المسيطر" للتحكم بالكامل ببيانات وبوابات التطبيق بطريقة آمنة.
-                        </p>
-                      )}
                     </div>
 
-                    {/* Custom Agent Behavior / System Instruction */}
-                    <div className="space-y-1.5 text-right">
-                      <div className="flex justify-between items-center text-xs font-bold text-[#4E342E]/60 tracking-wider">
-                        <span>سلوك الوكيل الذكي (Agent Persona)</span>
-                        <span className="text-[10px] opacity-60">(توجيه مخصص للمنظم)</span>
-                      </div>
-                      <textarea
-                        value={customSystemInstruction}
-                        onChange={e => setCustomSystemInstruction(e.target.value)}
-                        placeholder="اكتب التوجيهات لتحديد شخصية الوكيل وطريقة تنظيمه للنصوص (اتركه فارغاً للاستعانة بالتوجيه الافتراضي)..."
-                        rows={3}
-                        className="w-full bg-[#F5F5DC] border border-[#4E342E]/10 rounded-xl p-3 text-sm focus:outline-none focus:border-[#4E342E]/50 transition-all text-right font-sans"
-                      />
-                      <p className="text-[10px] text-[#4E342E]/50">
-                        يمكنك توجيه الوكيل، مثلاً: "أنت منظم نصوص برمجية صارم للغاية، قسّم البيانات واطلق مسميات برمجية بحته."
-                      </p>
-                    </div>
-
-                    {rollbackState && (
-                      <button 
-                        onClick={handleRestore}
-                        className="w-full mt-2 flex items-center justify-between p-3.5 bg-amber-500/10 hover:bg-amber-500/20 text-[#4E342E] border border-amber-500/20 font-bold text-xs rounded-xl transition-all"
+                    {/* Expandable Model selection parameters on successful verification only */}
+                    {isApiKeyVerified && (
+                      <motion.div 
+                        initial={{ opacity: 0, height: 0 }}
+                        animate={{ opacity: 1, height: 'auto' }}
+                        className="space-y-3 pt-3 border-t border-[#4E342E]/10 text-right"
                       >
-                        <span className="text-[10px] bg-amber-500/20 px-1.5 py-0.5 rounded text-[#4E342E]">متاح</span>
-                        <div className="flex items-center gap-2">
-                          <Undo size={14} />
-                          <span>استرجاع التنظيم السابق (Rollback)</span>
+                        {/* Model Selection */}
+                        <div className="space-y-2 text-right">
+                          <div className="flex justify-between items-center">
+                            <Brain size={16} className="text-[#4E342E]/60" />
+                          </div>
+                          
+                          <select 
+                            value={customModel === 'gemini-3.5-flash' || customModel === 'gemini-3.1-pro-preview' ? customModel : 'custom'}
+                            onChange={e => {
+                              if (e.target.value !== 'custom') {
+                                setCustomModel(e.target.value);
+                                setVerificationFeedback(null);
+                              }
+                            }}
+                            className="w-full bg-[#F5F5DC] border border-[#4E342E]/10 rounded-xl p-3 text-sm focus:outline-none focus:border-[#4E342E]/50 transition-all text-right font-sans outline-none"
+                          >
+                            <option value="gemini-3.5-flash">Flash</option>
+                            <option value="gemini-3.1-pro-preview">Pro</option>
+                            <option value="custom">Custom</option>
+                          </select>
+
+                          {/* Text Input for Custom Model */}
+                          {customModel !== 'gemini-3.5-flash' && customModel !== 'gemini-3.1-pro-preview' && (
+                            <input 
+                              type="text"
+                              value={customModel}
+                              onChange={e => {
+                                setCustomModel(e.target.value);
+                                setVerificationFeedback(null);
+                              }}
+                              placeholder="gemini-xp"
+                              className="w-full mt-1 bg-[#F5F5DC] border border-[#4E342E]/10 rounded-xl p-3 text-sm focus:outline-none focus:border-[#4E342E]/50 transition-all text-left font-mono"
+                            />
+                          )}
                         </div>
-                      </button>
+
+                        {/* Custom Agent Behavior / System Instruction */}
+                        <div className="space-y-1.5 text-right">
+                          <div className="flex justify-between items-center">
+                            <SettingsIcon size={16} className="text-[#4E342E]/60" />
+                          </div>
+                          <textarea
+                            value={customSystemInstruction}
+                            onChange={e => setCustomSystemInstruction(e.target.value)}
+                            placeholder="..."
+                            rows={3}
+                            className="w-full bg-[#F5F5DC] border border-[#4E342E]/10 rounded-xl p-3 text-sm focus:outline-none focus:border-[#4E342E]/50 transition-all text-right font-sans"
+                          />
+                        </div>
+                      </motion.div>
                     )}
                   </div>
                 </section>
 
-                <section className="space-y-4">
-                  <h3 className="text-sm font-semibold text-[#4E342E]/50 uppercase tracking-widest">About</h3>
-                  <div className="p-5 bg-[#4E342E]/5 border border-[#4E342E]/10 rounded-2xl space-y-2">
-                    <p className="text-sm">Prompt RKN v1.0.0</p>
-                    <p className="text-xs text-[#4E342E]/50 leading-relaxed">
-                      A premium client-side prompt manager. All data is stored locally in your browser.
+                <section className="space-y-4 font-sans">
+                  <h3 className="text-sm font-semibold text-[#4E342E]/50 uppercase tracking-widest text-[#4E342E]/60 text-right">About</h3>
+                  <div className="p-5 bg-[#4E342E]/5 border border-[#4E342E]/10 rounded-2xl space-y-2 text-right" dir="rtl">
+                    <p className="text-sm font-bold">Prompt RKN v1.0.0</p>
+                    <p className="text-xs text-[#4E342E]/60 leading-relaxed">
+                      مدير نصوص وبوابات احترافي آمن بمزامنة سحابية متقدمة.
                     </p>
                   </div>
                 </section>
               </div>
             </motion.div>
-          )}
-
-          {view === 'add-gate' && (
-            <Modal onClose={navigateToHome} title="New Gate">
-              <AddGateForm onAdd={(name) => { addGate(name); navigateToHome(); }} />
-            </Modal>
           )}
 
           {view === 'edit-gate' && currentGate && (
@@ -1201,14 +1436,14 @@ export default function App() {
               exit={{ opacity: 0, scale: 0.95 }}
               className="flex-1 flex flex-col h-screen max-h-screen"
             >
-              <header className="p-6 flex items-center justify-between border-b border-[#4E342E]/5 bg-[#F5F5DC]/80 backdrop-blur-xl sticky top-0 z-10">
+              <header className="p-6 flex items-center justify-between border-b border-[#4E342E]/5 bg-[#F5F5DC]/80 backdrop-blur-xl sticky top-0 z-10 w-full">
                 <div className="flex items-center gap-3">
                   <button onClick={navigateToHome} className="p-2 hover:bg-[#4E342E]/5 rounded-full transition-colors">
                     <ChevronLeft size={24} />
                   </button>
-                  <div className="text-left">
-                    <h2 className="text-lg font-bold pr-2">المنظم الذكي (AI Organizer)</h2>
-                    <p className="text-[10px] text-emerald-600 font-semibold flex items-center gap-1 pl-2">
+                  <div className="text-right">
+                    <h2 className="text-sm font-bold pr-1 pl-2">المنظم الذكي (AI Organizer)</h2>
+                    <p className="text-[10px] text-emerald-600 font-semibold flex items-center gap-1 pr-1 pl-2">
                       <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-ping" />
                       متصل ومستعد
                     </p>
@@ -1238,22 +1473,22 @@ export default function App() {
 
               {/* Chat Content or Activation Block depends on isApiKeyVerified */}
               {!isApiKeyVerified ? (
-                <div className="flex-1 flex flex-col items-center justify-center p-8 text-center space-y-6" dir="rtl">
-                  <div className="w-20 h-20 bg-amber-500/5 border border-amber-500/20 rounded-full flex items-center justify-center text-[#4E342E]/50 animate-pulse">
-                    <Brain size={44} className="text-[#4E342E]" />
+                <div className="flex-1 flex flex-col items-center justify-center p-8 text-center space-y-4" dir="rtl">
+                  <div className="w-16 h-16 bg-[#4E342E]/5 border border-[#4E342E]/10 rounded-full flex items-center justify-center text-[#4E342E]/50">
+                    <Brain size={32} className="text-[#4E342E]" />
                   </div>
-                  <div className="space-y-3 max-w-md">
-                    <h3 className="text-xl font-bold text-[#4E342E]">مفتاح التحكم والنموذج المسيطر غير نشط 🔑</h3>
-                    <p className="text-sm text-[#4E342E]/75 leading-relaxed">
-                      لتتمكن من استخدام المنظم الذكي وتنظيم بوابات وقوائم نصوص التطبيق بالكامل، يرجى تفعيل مفتاح الـ API والتحقق منه في الإعدادات أولاً ليصبح كـ "نموذج مسيطر" ومتحكم نشط ببيانات النظام.
+                  <div className="space-y-1 max-w-sm">
+                    <h3 className="text-base font-bold text-[#4E342E]">تفعيل مفتاح الـ API مطلوب</h3>
+                    <p className="text-xs text-[#4E342E]/60 leading-relaxed">
+                      يرجى إدخال والتحقق من مفتاح الـ API في الإعدادات لتفعيل المنظم الذكي.
                     </p>
                   </div>
                   <button
                     onClick={() => setView('settings')}
-                    className="px-6 py-3 bg-[#4E342E] hover:bg-[#3d2924] text-white font-bold text-xs rounded-xl shadow-lg transition-all active:scale-95 flex items-center gap-2"
+                    className="px-5 py-2.5 bg-[#4E342E] hover:bg-[#3d2924] text-white font-bold text-xs rounded-xl shadow transition-all active:scale-95 flex items-center gap-1.5 cursor-pointer font-sans"
                   >
-                    <span>⚙️</span>
-                    <span>الانتقال لتفعيل وحفّظ مفتاح الـ API</span>
+                    <SettingsIcon size={14} />
+                    <span>الانتقال للإعدادات</span>
                   </button>
                 </div>
               ) : (
@@ -1334,7 +1569,7 @@ export default function App() {
                         <div className="w-6 h-6 bg-[#4E342E]/10 rounded-full flex items-center justify-center animate-spin">
                           <Brain size={12} className="text-[#4E342E]" />
                         </div>
-                        <span>معالج RKN يقوم بتحليل وتخطيط بوابات ونصوص النظام...</span>
+                        <span>جاري تنظيم بوابات ونصوص النظام الذكي...</span>
                       </div>
                     )}
                   </div>
@@ -1354,7 +1589,7 @@ export default function App() {
                       onChange={e => setChatInput(e.target.value)}
                       onKeyDown={e => { if (e.key === 'Enter') sendChatMessage(); }}
                       disabled={isChatLoading}
-                      placeholder="مثال: قسّم نصوصي إلى بوابتي العمل والتثقيف..."
+                      placeholder="كيف يمكنني مساعدتك في تنظيم بوابات ومقترحات النصوص اليوم؟"
                       className="flex-1 bg-[#4E342E]/5 border border-[#4E342E]/10 rounded-2xl p-3.5 text-right focus:outline-none focus:border-[#4E342E]/50 transition-all text-sm"
                       dir="rtl"
                     />

@@ -13,6 +13,13 @@ async function startServer() {
   app.use(express.json({ limit: "10mb" }));
 
   // API router
+  app.get("/api/config", (req, res) => {
+    res.json({
+      hasServerKey: !!process.env.GEMINI_API_KEY,
+      defaultModel: process.env.GEMINI_DEFAULT_MODEL || "gemini-2.5-flash"
+    });
+  });
+
   app.post("/api/gemini/verify", async (req, res) => {
     try {
       const { customApiKey, model } = req.body;

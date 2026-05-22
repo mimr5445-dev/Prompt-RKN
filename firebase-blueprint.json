@@ -1,0 +1,30 @@
+{
+  "entities": {
+    "UserAppState": {
+      "title": "UserAppState",
+      "description": "The complete prompt and category state of a single user.",
+      "type": "object",
+      "properties": {
+        "gates": {
+          "type": "array",
+          "description": "List of gates / categories created by the user."
+        },
+        "prompts": {
+          "type": "array",
+          "description": "List of prompts belonging to user categories."
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "The last time this state was updated on the server/client."
+        }
+      },
+      "required": ["gates", "prompts"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}/data/appState": {
+      "schema": "UserAppState",
+      "description": "Stores the synchronized prompt state for a specific user ID."
+    }
+  }
+}
