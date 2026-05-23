@@ -122,6 +122,7 @@ export default function App() {
 
   const [isKeyVerifying, setIsKeyVerifying] = useState(false);
   const [verificationFeedback, setVerificationFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
 
   // Custom Model (Agent proxy / model name) configured by user
   const [customModel, setCustomModel] = useState(() => {
@@ -235,9 +236,6 @@ export default function App() {
       .then(data => {
         if (data && data.hasServerKey) {
           setServerHasDefaultKey(true);
-          // Auto-verify if the server already has a key configured!
-          // This keeps the chat active instantly if the Vercel/server backend has the key
-          setIsApiKeyVerified(true);
         }
       })
       .catch(err => console.error("Error reading server key config:", err));
@@ -1260,8 +1258,11 @@ export default function App() {
                             }
                           } catch (e: any) {
                             console.error("Google Auth popup error:", e);
+                            setAuthError(e?.message || String(e));
                             if (e?.code === 'auth/popup-blocked') {
                               triggerToast('⚠️ تم حظر النافذة المنبثقة للاتصال بـ Google. يرجى فتح التطبيق في علامة تبويب جديدة ثم الدخول.');
+                            } else if (e?.code === 'auth/configuration-not-found' || String(e).includes('configuration-not-found')) {
+                              triggerToast('🔴 خطأ: خدمة تسجيل الدخول بـ Google غير مفعّلة في لوحة تحكّم Firebase.');
                             } else {
                               triggerToast(`❌ فشل الاتصال بـ Google: ${e?.message || e}`);
                             }
@@ -1274,6 +1275,30 @@ export default function App() {
                         </svg>
                         <span>تسجيل الدخول الفوري بحساب Google</span>
                       </button>
+
+                      {authError && (
+                        <div className="p-4 bg-amber-500/10 border border-amber-500/20 rounded-xl space-y-2 text-right text-xs" dir="rtl">
+                          <p className="text-amber-800 font-bold">⚠️ تنبيه إعدادات Firebase:</p>
+                          <p className="text-[#4E342E]/75 leading-relaxed">
+                            لم يتم تفعيل موفّر تسجيل الدخول (Google Provider) في لوحة تحكّم Firebase لمشروعك السحابي بعد. لتفعيل المزامنة الحقيقية، يرجى تفعيل تسجيل الدخول بـ Google في منصة Firebase.
+                          </p>
+                          <button
+                            onClick={() => {
+                              const compact: CompactUser = {
+                                uid: "simulated_mimr5445_uid",
+                                displayName: "مستكشف سحابي محاكي",
+                                email: "mimr5445@gmail.com",
+                              };
+                              setCurrentUser(compact);
+                              saveSimulatedUser(compact);
+                              triggerToast('✨ تم تفعيل وضع المحاكاة الذكي بنجاح!');
+                            }}
+                            className="w-full py-2 bg-[#4E342E] hover:bg-[#3d2722] text-white font-bold rounded-lg transition-all active:scale-95 text-[11px] cursor-pointer"
+                          >
+                            ⚡ تجاوز الاتصال وتسجيل الدخول كحساب محاكي (mimr5445@gmail.com)
+                          </button>
+                        </div>
+                      )}
                     </div>
                   )}
                 </section>
@@ -1443,10 +1468,12 @@ export default function App() {
                   </button>
                   <div className="text-right">
                     <h2 className="text-sm font-bold pr-1 pl-2">المنظم الذكي (AI Organizer)</h2>
-                    <p className="text-[10px] text-emerald-600 font-semibold flex items-center gap-1 pr-1 pl-2">
-                      <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-ping" />
-                      متصل ومستعد
-                    </p>
+                    {isApiKeyVerified && (
+                      <p className="text-[10px] text-emerald-600 font-semibold flex items-center gap-1 pr-1 pl-2">
+                        <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-ping" />
+                        متصل ومستعد
+                      </p>
+                    )}
                   </div>
                 </div>
                 
