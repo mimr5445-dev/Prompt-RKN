@@ -1,76 +1,83 @@
 # Prompt-RKN
 
-Prompt-RKN is a modular and flexible application designed to manage and organize AI prompts efficiently. The system offers advanced integration of the Gemini API, allowing stable and interactive AI prompt execution.
-
-## Features
-- Flexible AI prompt management
-- Support for Gemini models
-- Organized structure for scalability
-- APIs for prompt validation and chat functionality
+Prompt-RKN is an advanced system for managing and organizing AI prompt workflows. The application offers safe and efficient integration with the Gemini API and supports Firebase for data storage.
 
 ---
 
-## Setup and Installation
+## 🔥 Features
+- Modular architecture for scalability
+- Advanced AI integration with Gemini API
+- Fully-configurable `systemPrompt`
+- Rate-limited and secure API endpoints
+- Dedicated error handling and input validation
+
+---
+
+## ⚙️ Project Setup
 
 ### Prerequisites
-Make sure the following are installed:
-- Node.js (16 or later)
-- Firebase account for database integration
-- Gemini API key
+- **Install Node.js**: Version `16` or later is required.
+- **Install npm packages**: Run `npm install` in the project root.
 
-### Steps
-1. Clone the repository:
-```bash
-$ git clone https://github.com/mimr5445-dev/Prompt-RKN.git
-```
-
-2. Navigate to the project directory:
-```bash
-$ cd Prompt-RKN
-```
-
-3. Install dependencies:
-```bash
-$ npm install
-```
-
-4. Set up environment variables:
-Create a `.env` file in the root directory with the following keys:
-```bash
-GEMINI_API_KEY=your-gemini-api-key
-NODE_ENV=development
-```
-
-5. Run in development mode:
-```bash
-$ npm run dev
-```
-
-6. Build for production:
-```bash
-$ npm run build
-$ npm start
-```
+### Adding Configurations
+- **Firebase setup**:
+  Modify `src/config/firebase.ts` with your Firebase project credentials.
+- **`.env` file**:
+  Copy `.env.example` into a new file named `.env` and fill in required values:
+  ```env
+  GEMINI_API_KEY=<your-gemini-api-key>
+  GEMINI_DEFAULT_MODEL=gemini-2.5-flash
+  NODE_ENV=development
+  ```
 
 ---
 
-## Directory Structure
+## 🌳 Project Structure
 ```plaintext
-src
-├── config/           # App configuration files
-├── middleware/       # Express middlewares
-├── prompts/          # System and default instructions
-├── routes/           # API route handlers
-├── services/         # Business logic (e.g., Gemini service)
+src/
+ ├── config/         # Configuration files (env, Firebase setup)
+ ├── middleware/     # Middleware containing error handling
+ ├── prompts/        # Prompt systems
+ ├── routes/         # API route modules
+ ├── services/       # Handle business logic (e.g., Gemini interactions)
+ ├── utils/          # Utility/helper functions
+ ├── types/          # Shared TypeScript types
 ```
 
 ---
 
-## Firebase and Gemini API Setup
-- **Firebase**: Add your Firebase project's configuration to the `/config/firebase.ts` or environment variables.
-- **Gemini API**: Ensure `GEMINI_API_KEY` is secured and added to the `.env` file.
+## 🚀 Running the Application
+
+1. **Start the Dev Server**:
+   ```bash
+   npm run dev
+   ```
+
+2. **Build for Production**:
+   ```bash
+   npm run build && npm start
+   ```
 
 ---
 
-## Contribution
-We welcome contributions! Report issues or create pull requests to help improve Prompt-RKN.
+## 🛡️ Security Enhancements
+- **Rate limiting**: To prevent abuse.
+- **Helmet headers**: Improved HTTP security.
+- **Environment-based API keys**: Never expose sensitive data.
+- **Validation enforcement**: All API payloads are validated.
+
+---
+
+## ⚠️ Contributing
+
+You're welcome to contribute by:
+- Suggesting features or fixes
+- Reporting bugs
+- Improving documentation
+  
+Submit issues and PRs via the [GitHub repository](https://github.com/mimr5445-dev/Prompt-RKN).
+
+---
+
+## 📜 License
+This project is under the MIT License.
