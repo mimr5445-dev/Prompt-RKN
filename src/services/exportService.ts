@@ -1,11 +1,11 @@
 import { AppState } from '../types';
 import { z } from 'zod';
 
-// 1. تعريف Schema صارم للتحقق من بنية البيانات المستوردة
+// Schema للتحقق من صحة ملف الـ JSON المرفوع للتطبيق لحمايته من الملفات التالفة
 const AppStateSchema = z.object({
-  gates: z.array(z.any()),   // يمكنك لاحقاً استبدال z.any() بمخطط دقيق يمثل الـ Gate
-  prompts: z.array(z.any())  // يمكنك لاحقاً استبدال z.any() بمخطط دقيق يمثل الـ Prompt
-}).passthrough(); // passthrough تسمح بقبول أي خصائص إضافية قد تكون موجودة في AppState دون إحداث خطأ
+  gates: z.array(z.any()),
+  prompts: z.array(z.any())
+}).passthrough();
 
 export const exportService = {
   exportData: (state: AppState) => {
@@ -24,16 +24,13 @@ export const exportService = {
       
       reader.onload = (event) => {
         try {
-          // محاولة تحويل النص إلى كائن JSON
           const parsedData = JSON.parse(event.target?.result as string);
           
-          // 2. استخدام Zod للتحقق من الهيكلة
-          // إذا كانت البيانات غير صالحة، ستُلقي parse خطأ من نوع ZodError
+          // التحقق الصارم عبر مكتبة Zod
           const validatedState = AppStateSchema.parse(parsedData);
           
           resolve(validatedState as AppState);
         } catch (err) {
-          // 3. معالجة الأخطاء بشكل احترافي
           if (err instanceof z.ZodError) {
             console.error('❌ Zod Validation Error:', err.errors);
             reject(new Error('هيكل ملف النسخة الاحتياطية غير صالح أو تالف.'));
